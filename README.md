@@ -6,10 +6,10 @@ Windows 11 24H2 introduced new default scheduled tasks. One is RequestTrace, whi
 
 **Only works on Windows 11 24H2 (and maybe newer Windows 11 versions?)**
 
-    Usage: RequestTrace_UAC_Bypass.exe [bypass|cleanup] [dll path]
+    Usage: RequestTrace_UAC_Bypass.exe [bypass|cleanup|kill] [dll path]
     
     Example: RequestTrace_UAC_Bypass.exe bypass startcmd.dll
 
-***Note: If the RequestTrace scheduled task is already running the UAC bypass fails. In this case the process (taskhostw.exe) running the task needs to be terminated. Terminating elevated processes of the same user by an unelevated process is still allowed in Windows.***
+***Note: If the RequestTrace or CDSSync scheduled task is running the UAC bypass fails. In this case the process (taskhostw.exe) running the task needs to be terminated. Terminating elevated processes of the same user by an unelevated process is still allowed in Windows. Use 'RequestTrace_UAC_Bypass.exe kill' to terminate any elevated taskhostw.exe process.***
 
 ![RequestTrace_UAC_Bypass.exe bypasses UAC on highest setting](win11_uac_bypass.png)

